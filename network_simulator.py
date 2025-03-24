@@ -26,13 +26,14 @@ def simulator(listen_ip, listen_port, forward_ip, forward_port,
     sock_in.bind((listen_ip, listen_port))
 
     sock_out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock_out.bind((forward_ip, forward_port))
+    sock_out.bind((forward_ip, 0))  # bind to an ephemeral port
 
     reorder_buffer = []
 
     def handle_incoming_from_A():
         while True:
             data, addr = sock_in.recvfrom(4096)
+            print("Simulator received", len(data), "bytes from", addr)
             # Possibly drop
             if random.random() < drop_prob:
                 continue
@@ -44,6 +45,7 @@ def simulator(listen_ip, listen_port, forward_ip, forward_port,
                 reorder_buffer.append((data, 'A'))
             else:
                 sock_out.sendto(data, (forward_ip, forward_port))
+                print("Simulator forwarded to", (forward_ip, forward_port))
 
     def handle_incoming_from_B():
         while True:

@@ -123,6 +123,7 @@ class RDTSocket:
         while self.running:
             try:
                 packet, addr = self.udp_sock.recvfrom(2048)
+                print(f"[DEBUG] Server _listen received {len(packet)} bytes from {addr}")
             except:
                 continue  # socket might be closed
 
@@ -132,6 +133,8 @@ class RDTSocket:
             # If remote_addr is not set, this is the first communication from a client
             if self.remote_addr is None:
                 self.remote_addr = addr
+                print(f"[DEBUG] Server remote_addr set to {self.remote_addr}")
+
 
             # Distinguish if this is an ACK or a Data packet by parsing the header
             seq_num, ack_flag, data = self._parse_packet(packet)

@@ -1,7 +1,7 @@
 # server.py
 
 import argparse
-from rdt import RDTSocket
+from rdt_protocol import RDTSocket
 
 def main():
     parser = argparse.ArgumentParser()
