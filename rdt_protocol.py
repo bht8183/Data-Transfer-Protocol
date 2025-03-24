@@ -135,14 +135,17 @@ class RDTSocket:
                 self.remote_addr = addr
                 print(f"[DEBUG] Server remote_addr set to {self.remote_addr}")
 
-
             # Distinguish if this is an ACK or a Data packet by parsing the header
-            seq_num, ack_flag, data = self._parse_packet(packet)
+            
+            seq_num, ack_flag, data, received_cksum = self._parse_packet(packet)
+
+            if self._is_corrupt(seq_num, ack_flag, data, received_cksum):
+                print("[DEBUG] Packet is corrupt; discarding")
+                continue
+
             if ack_flag:
-                # This is an ACK
                 self._handle_ack(seq_num)
             else:
-                # This is a data packet
                 self._handle_data(seq_num, data)
 
     def _handle_data(self, seq_num, data):
@@ -150,10 +153,6 @@ class RDTSocket:
         Receiver logic for GBN: if seq_num == expected_seq_num, deliver and ack it;
         else re-ack the last one we got in order.
         """
-        # Very simple GBN approach
-        if self._is_corrupt(seq_num, data):
-            return  # discard corrupt data (no ack or optional duplicate ack of last in-order)
-
         if seq_num == self.expected_seq_num:
             # Deliver data
             self.lock.acquire()
@@ -170,7 +169,10 @@ class RDTSocket:
             # Check if we have buffered out-of-order packets (not strictly needed in GBN)
         else:
             # re-ack the last in-order packet
-            ack_pkt = self._make_packet(self.expected_seq_num - 1, b'', ack_flag=True)
+            last_in_order = self.expected_seq_num - 1
+            if last_in_order < 0:
+                last_in_order = 0
+            ack_pkt = self._make_packet(last_in_order, b'', ack_flag=True)
             self.udp_sock.sendto(ack_pkt, self.remote_addr)
 
     def _handle_ack(self, ack_num):
@@ -270,31 +272,32 @@ class RDTSocket:
         return header + cksum_bytes + data
 
     def _parse_packet(self, packet):
-        """
-        Parse the packet, return (seq_num, ack_flag, data).
-        """
         if len(packet) < 9:
-            return 0, False, b''  # Corrupt or too short, ignore
+            # Not enough for a valid packet
+            return 0, False, b'', 0
 
-        header = packet[:5]  # 4 bytes seq_num + 1 byte ack_flag
+        header = packet[:5]   # 4 bytes seq_num + 1 byte ack_flag
+        cksum_bytes = packet[5:9]
+        data = packet[9:]
+
+        seq_num, ack_flag = struct.unpack("!I?", header)
+        received_cksum = struct.unpack("!I", cksum_bytes)[0]
+        return seq_num, ack_flag, data, received_cksum
+
+    def _parse_packet(self, packet):
+        if len(packet) < 9:
+            return 0, False, b'', 0  # We'll treat it as "bad"
+
+        header = packet[:5]
         cksum_bytes = packet[5:9]
         data = packet[9:]
 
         seq_num, ack_flag = struct.unpack("!I?", header)
         received_cksum = struct.unpack("!I", cksum_bytes)[0]
 
-        # We do *not* do the corruption check here directly; 
-        # we can do it in a helper so we can skip or do partial parse.
-        return seq_num, ack_flag, data
+        return seq_num, ack_flag, data, received_cksum
 
-    def _is_corrupt(self, seq_num, data):
-        """
-        Check if the given seq_num+data is corrupt by verifying CRC32
-        with what is in the packet.
-        For simplicity, let's not complicate partial parse. We'll rely on parse order.
-        """
-        # We do this in parse_packet or handle_data if needed. 
-        # But let's do it here for clarity:
-        # Reconstruct what the packet would have been for CRC
-        # Actually, we'll just do a re-check with parse_packet approach
-        return False  # The simplest approach is to re-check the CRC in _parse_packet (not shown).
+    def _is_corrupt(self, seq_num, ack_flag, data, received_cksum):
+        header = struct.pack("!I?", seq_num, ack_flag)
+        computed_cksum = zlib.crc32(header + data) & 0xffffffff
+        return (computed_cksum != received_cksum)
