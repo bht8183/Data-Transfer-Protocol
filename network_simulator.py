@@ -32,6 +32,7 @@ def simulator(listen_ip, listen_port, forward_ip, forward_port,
 
     def handle_incoming_from_A():
         while True:
+            
             data, addr = sock_in.recvfrom(4096)
             print("Simulator received", len(data), "bytes from", addr)
             # Possibly drop
