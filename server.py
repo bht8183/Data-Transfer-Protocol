@@ -1,4 +1,7 @@
-# server.py
+"""
+Server side of the file transfer application using our custom RDT protocol.
+Waits for a client to connect, then receives incoming file data.
+"""
 
 import argparse
 from rdt_protocol import RDTSocket

@@ -1,4 +1,6 @@
-# rdt.py
+"""
+Implementation of a Go-Back-N style reliable data transfer RDT protocol over UDP.
+"""
 
 import socket
 import threading
@@ -7,12 +9,12 @@ import struct
 import zlib
 
 # ===============================
-# Constants and Configuration
+# Constants and Configs
 # ===============================
-MAX_PACKET_SIZE = 1400       # A safe UDP payload size (can adjust)
+MAX_PACKET_SIZE = 1400       # Approx max bytes we send in a single UDP payload
 TIMEOUT = 1.0                # Retransmission timeout (seconds)
 WINDOW_SIZE = 4              # Go-Back-N window size
-SLEEP_BETWEEN_SENDS = 0.002  # artificially slow sending (bits/s) if needed
+SLEEP_BETWEEN_SENDS = 0.002  # slow sending rate
 
 # ===============================
 # RDTSocket Class
@@ -24,11 +26,11 @@ class RDTSocket:
 
     def __init__(self, local_addr=("0.0.0.0", 0)):
         """
-        Initialize and bind the UDP socket. Also start a thread to listen for incoming packets.
+        Initializes a UDP socket at the given local_addr and starts a listener thread.
         """
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.bind(local_addr)
-        self.remote_addr = None  # We'll set this once we know who we're talking to
+        self.remote_addr = None  # Will store who we're sending/receiving from
 
         # Sender-side variables
         self.send_base = 0               # oldest unacknowledged packet
@@ -37,61 +39,54 @@ class RDTSocket:
         self.send_buffer = {}            # seq_num -> (packet_bytes, timestamp)
 
         # Receiver-side variables
-        self.expected_seq_num = 0
-        self.recv_buffer = {}            # if you want to buffer out-of-order (for SR), but for GBN we might not do that
+        self.expected_seq_num = 0        # Next sequence number we expect to receive
+        self.recv_buffer = {}            # If we did SR, we'd store out-of-order packets her
 
-        # Lock and condition for thread-safety
+        # Lock for thread safety
         self.lock = threading.Lock()
 
-        # Timer
+        #  Timer for Go-Back-N
         self.timer = None
 
-        # Running state
+        # Thread management
         self.running = True
 
-        # Start thread to handle incoming data
         self.listen_thread = threading.Thread(target=self._listen)
         self.listen_thread.daemon = True
         self.listen_thread.start()
 
     def connect(self, remote_addr):
         """
-        For the client side: specify who we're sending data to (the server).
+        For clients: specify who we'll be sending to.
         """
         self.remote_addr = remote_addr
 
     def accept(self):
         """
-        For the server side: wait until we see the first incoming packet from a client.
-        We then store that address in self.remote_addr.
+        For servers: wait until the first packet arrives from client, then store their address.
         """
         while self.remote_addr is None:
             time.sleep(0.01)
 
     def rdt_send(self, data):
         """
-        Send data reliably using Go-Back-N.
-        You can call this multiple times to send multiple messages.
-        Each call is broken into 1 or more packets.
+        Split data into chunks and send them reliably using Go-Back-N logic.
         """
         if not self.remote_addr:
-            raise ValueError("Remote address not set. Call connect(...) or accept() first.")
+            raise ValueError("Remote address not set. Call connect(..) or accept() first.")
 
         # Break data into chunks that fit into a packet
         offset = 0
         while offset < len(data):
-            chunk = data[offset: offset + (MAX_PACKET_SIZE - 20)]  # 20 for header overhead
+            chunk = data[offset: offset + (MAX_PACKET_SIZE - 20)]  
             offset += (MAX_PACKET_SIZE - 20)
             self._send_one_chunk(chunk)
 
     def rdt_recv(self):
         """
-        Blocking call to receive data in-order.
-        This function returns entire "messages" as they arrive, so you might want a protocol on top.
-        For a basic approach, we can store chunks in a queue.
+        Blocking call to receive data in-order. Returns the next chunk once available.
+        Uses a queue (self.received_data) internally.
         """
-        # We can store received data in a queue and pop from it
-        # For demonstration, let's store them in self.received_data
         while True:
             # Check if we have data in a queue
             self.lock.acquire()
@@ -150,7 +145,7 @@ class RDTSocket:
 
     def _handle_data(self, seq_num, data):
         """
-        Receiver logic for GBN: if seq_num == expected_seq_num, deliver and ack it;
+        Receiver logic for GBN if seq_num == expected_seq_num, deliver and ack it;
         else re-ack the last one we got in order.
         """
         if seq_num == self.expected_seq_num:
@@ -166,7 +161,7 @@ class RDTSocket:
             ack_pkt = self._make_packet(self.expected_seq_num - 1, b'', ack_flag=True)
             self.udp_sock.sendto(ack_pkt, self.remote_addr)
 
-            # Check if we have buffered out-of-order packets (not strictly needed in GBN)
+            # Check if we have buffered out-of-order packets
         else:
             # re-ack the last in-order packet
             last_in_order = self.expected_seq_num - 1
@@ -177,7 +172,7 @@ class RDTSocket:
 
     def _handle_ack(self, ack_num):
         """
-        Sender logic: if ack_num is within our window, move send_base.
+        Sender logic if ack_num is within our window, move send_base.
         """
         self.lock.acquire()
         # Move send_base if this ACK is new
@@ -272,21 +267,12 @@ class RDTSocket:
         return header + cksum_bytes + data
 
     def _parse_packet(self, packet):
+        """
+        Returns (seq_num, ack_flag, data, received_cksum).
+        If packet is too short, returns defaults that will likely be discarded.
+        """
         if len(packet) < 9:
-            # Not enough for a valid packet
-            return 0, False, b'', 0
-
-        header = packet[:5]   # 4 bytes seq_num + 1 byte ack_flag
-        cksum_bytes = packet[5:9]
-        data = packet[9:]
-
-        seq_num, ack_flag = struct.unpack("!I?", header)
-        received_cksum = struct.unpack("!I", cksum_bytes)[0]
-        return seq_num, ack_flag, data, received_cksum
-
-    def _parse_packet(self, packet):
-        if len(packet) < 9:
-            return 0, False, b'', 0  # We'll treat it as "bad"
+            return 0, False, b'', 0  # treat it as "bad"
 
         header = packet[:5]
         cksum_bytes = packet[5:9]
@@ -298,6 +284,10 @@ class RDTSocket:
         return seq_num, ack_flag, data, received_cksum
 
     def _is_corrupt(self, seq_num, ack_flag, data, received_cksum):
+        """
+        Recomputes the CRC for the received header + data
+        and compares it with received_cksum.
+        """
         header = struct.pack("!I?", seq_num, ack_flag)
         computed_cksum = zlib.crc32(header + data) & 0xffffffff
         return (computed_cksum != received_cksum)
